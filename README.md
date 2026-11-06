@@ -54,6 +54,18 @@ npm run dev       # run from source with tsx
 npm run inspect   # MCP Inspector
 ```
 
+## Hosted endpoint (Vercel)
+
+A public instance runs on Vercel as a stateless Streamable HTTP endpoint (POST only):
+
+```bash
+claude mcp add --transport http open-meteo https://open-meteo-mcp-eight.vercel.app/api/mcp
+```
+
+`api/mcp.js` serves `dist/http.js` (built by `npm run build`, see `vercel.json`); `public/` is the landing page. To deploy your own: `vercel link`, then `vercel deploy --prod`. The `OPEN_METEO_*_URL` variables below can be set as Vercel environment variables.
+
+Everyone using the hosted endpoint shares one free Open-Meteo quota from Vercel's IPs (600 calls/min, 5,000/hour, 10,000/day), and the same non-commercial terms apply. For heavy use, run your own instance.
+
 ## Environment variables
 
 Both are optional; each one is the full endpoint URL.
