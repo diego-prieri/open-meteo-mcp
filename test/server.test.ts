@@ -20,7 +20,9 @@ import {
   type GeocodingResult,
   type OpenMeteoBackend,
 } from '../src/backend.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createServer } from '../src/server.js';
+import { registerWeatherTools } from '../src/tools/weather.js';
 import { wmoMarkdown, wmoText } from '../src/wmo.js';
 
 const SEED = [
@@ -198,7 +200,8 @@ async function withHttp(
     });
     await fn(backend, seen);
   } finally {
-    srv.close();
+    srv.closeAllConnections();
+    await new Promise<void>((r) => srv.close(() => r()));
   }
 }
 
@@ -320,4 +323,188 @@ test('http: network error has no status', async () => {
     assert.ok(e.message.startsWith('network error calling Open-Meteo /v1/forecast'), e.message);
     return true;
   });
+});
+
+// --- Tools: search_locations, get_current_weather ---
+
+async function connectWeather(backend: OpenMeteoBackend = fake()) {
+  const server = new McpServer({ name: 'test-weather', version: '0.0.0' });
+  registerWeatherTools(server, backend);
+  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverSide);
+  const c = new Client({ name: 'test', version: '0.0.0' });
+  await c.connect(clientSide);
+  return c;
+}
+
+const lines = (r: any) => text(r).split('\n');
+
+test('search_locations: ambiguous name returns one line per place (criterio 2)', async () => {
+  const c = await connectWeather();
+  const res = await c.callTool({ name: 'search_locations', arguments: { name: 'Córdoba' } });
+  const out = lines(res);
+  assert.equal(out.length, 3);
+  assert.ok(out.some((l) => l.includes('(AR)')));
+  assert.ok(out.some((l) => l.includes('(ES)')));
+  assert.ok(out.some((l) => l.includes('(MX)')));
+  assert.equal((res.structuredContent as any).results.length, 3);
+});
+
+test('search_locations: country_code narrows to one (criterio 1)', async () => {
+  const c = await connectWeather();
+  const res = await c.callTool({ name: 'search_locations', arguments: { name: 'Córdoba', country_code: 'AR' } });
+  assert.equal(
+    text(res),
+    'Córdoba — Provincia de Córdoba, Argentina (AR) (-31.40648, -64.18853) America/Argentina/Cordoba [id 3860259]',
+  );
+});
+
+test('search_locations: lowercase country_code is normalized', async () => {
+  const backend = fake();
+  const c = await connectWeather(backend);
+  const res = await c.callTool({ name: 'search_locations', arguments: { name: 'Córdoba', country_code: 'ar' } });
+  assert.notEqual(res.isError, true);
+  assert.equal((backend.calls[0].query as any).countryCode, 'AR');
+  assert.match(text(res), /\[id 3860259\]/);
+});
+
+test('search_locations: matches without accents', async () => {
+  const c = await connectWeather();
+  const res = await c.callTool({ name: 'search_locations', arguments: { name: 'cordoba' } });
+  assert.equal(lines(res).length, 3);
+});
+
+test('search_locations: count limits results', async () => {
+  const c = await connectWeather();
+  const res = await c.callTool({ name: 'search_locations', arguments: { name: 'Córdoba', count: 2 } });
+  assert.equal(lines(res).length, 2);
+});
+
+test('search_locations: defaults count 5 and language es', async () => {
+  const backend = fake();
+  const c = await connectWeather(backend);
+  await c.callTool({ name: 'search_locations', arguments: { name: 'Córdoba' } });
+  const q = backend.calls[0].query as any;
+  assert.equal(q.count, 5);
+  assert.equal(q.language, 'es');
+});
+
+test('search_locations: empty result is not an error', async () => {
+  const c = await connectWeather(fake({ locations: [] }));
+  const res = await c.callTool({ name: 'search_locations', arguments: { name: 'Zzyzx' } });
+  assert.notEqual(res.isError, true);
+  assert.ok(text(res).includes('Check the spelling'));
+  assert.ok(text(res).includes('without country_code'));
+  assert.deepEqual(res.structuredContent, { results: [] });
+});
+
+test('search_locations: rejects invalid input before the backend', async () => {
+  for (const args of [
+    {},
+    { name: '' },
+    { name: '   ' },
+    { name: 'x', count: 0 },
+    { name: 'x', count: 21 },
+    { name: 'x', country_code: 'ARG' },
+    { name: 'x', country_code: 'A1' },
+    { name: 'x', language: 'ES' },
+    { name: 'x', language: 'spa' },
+  ]) {
+    const backend = fake();
+    const c = await connectWeather(backend);
+    const res = await c.callTool({ name: 'search_locations', arguments: args });
+    assert.equal(res.isError, true, JSON.stringify(args));
+    assert.equal(backend.calls.length, 0, JSON.stringify(args));
+  }
+});
+
+const currentWith = (edit: (w: CurrentWeather) => void) => {
+  const w = structuredClone(fixture<CurrentWeather>('current-cordoba'));
+  edit(w);
+  return fake({ current: w });
+};
+
+test('get_current_weather: formats the fixture with units and timezone (criterio 1)', async () => {
+  const c = await connectWeather();
+  const res = await c.callTool({ name: 'get_current_weather', arguments: { latitude: -31.4, longitude: -64.19 } });
+  const t = text(res);
+  for (const s of ['27.3°C', 'feels like 28°C', 'Mainly clear, day', '2026-11-06T14:15 America/Argentina/Cordoba (GMT-3)', '38%', '0 mm', '10.6 km/h from 198° S']) {
+    assert.ok(t.includes(s), `missing ${s} in:\n${t}`);
+  }
+  assert.ok(t.startsWith('Current weather at (-31.4587, -64.19354)'), t);
+  assert.equal((res.structuredContent as any).current.temperature_2m, 27.3);
+});
+
+test('get_current_weather: units come from current_units (criterio 4)', async () => {
+  const backend = currentWith((w) => {
+    w.current_units.temperature_2m = '°F';
+    w.current_units.apparent_temperature = '°F';
+    w.current_units.wind_speed_10m = 'mph';
+    w.current.temperature_2m = 81.1;
+    w.current.apparent_temperature = 82.4;
+    w.current.wind_speed_10m = 6.6;
+  });
+  const c = await connectWeather(backend);
+  const res = await c.callTool({
+    name: 'get_current_weather',
+    arguments: { latitude: -31.4, longitude: -64.19, temperature_unit: 'fahrenheit', wind_speed_unit: 'mph' },
+  });
+  const t = text(res);
+  assert.ok(t.includes('81.1°F'), t);
+  assert.ok(t.includes('6.6 mph'), t);
+  assert.ok(!t.includes('°C'), t);
+  assert.ok(!t.includes('km/h'), t);
+  const q = backend.calls[0].query as any;
+  assert.equal(q.temperatureUnit, 'fahrenheit');
+  assert.equal(q.windSpeedUnit, 'mph');
+});
+
+test('get_current_weather: is_day 0 shows night', async () => {
+  const c = await connectWeather(currentWith((w) => (w.current.is_day = 0)));
+  const res = await c.callTool({ name: 'get_current_weather', arguments: { latitude: -31.4, longitude: -64.19 } });
+  assert.ok(text(res).includes(', night'), text(res));
+});
+
+test('get_current_weather: nulls show n/a', async () => {
+  const backend = currentWith((w) => {
+    w.current.temperature_2m = null;
+    w.current.wind_direction_10m = null;
+    w.current.weather_code = null;
+  });
+  const c = await connectWeather(backend);
+  const res = await c.callTool({ name: 'get_current_weather', arguments: { latitude: -31.4, longitude: -64.19 } });
+  const t = text(res);
+  assert.ok(t.includes('Temperature: n/a'), t);
+  assert.ok(t.includes('from n/a'), t);
+  assert.ok(lines(res)[1].startsWith('n/a'), t);
+  assert.ok(!t.includes('null'), t);
+});
+
+test('get_current_weather: unknown WMO code', async () => {
+  const c = await connectWeather(currentWith((w) => (w.current.weather_code = 42)));
+  const res = await c.callTool({ name: 'get_current_weather', arguments: { latitude: -31.4, longitude: -64.19 } });
+  assert.ok(text(res).includes('Unknown (code 42)'), text(res));
+});
+
+test('get_current_weather: missing unit key says unit unknown', async () => {
+  const c = await connectWeather(currentWith((w) => delete w.current_units.precipitation));
+  const res = await c.callTool({ name: 'get_current_weather', arguments: { latitude: -31.4, longitude: -64.19 } });
+  assert.ok(text(res).includes('Precipitation: 0 (unit unknown)'), text(res));
+});
+
+test('get_current_weather: rejects invalid input before the backend', async () => {
+  for (const args of [
+    { latitude: 91, longitude: 0 },
+    { latitude: -91, longitude: 0 },
+    { latitude: 0, longitude: 181 },
+    { latitude: 'abc', longitude: 0 },
+    { latitude: 0, longitude: 0, temperature_unit: 'kelvin' },
+    { latitude: 0, longitude: 0, wind_speed_unit: 'knots' },
+  ]) {
+    const backend = fake();
+    const c = await connectWeather(backend);
+    const res = await c.callTool({ name: 'get_current_weather', arguments: args });
+    assert.equal(res.isError, true, JSON.stringify(args));
+    assert.equal(backend.calls.length, 0, JSON.stringify(args));
+  }
 });
