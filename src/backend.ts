@@ -264,3 +264,86 @@ export class FakeOpenMeteoBackend implements OpenMeteoBackend {
     return f;
   }
 }
+
+export const DEFAULT_GEOCODING_URL = 'https://geocoding-api.open-meteo.com/v1/search';
+export const DEFAULT_FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
+const USER_AGENT = 'open-meteo-mcp/0.1.0 (MCP server; Node.js)';
+
+export interface HttpOpenMeteoOptions {
+  geocodingUrl?: string;
+  forecastUrl?: string;
+  timeoutMs?: number;
+}
+
+/** Only non-default units are sent (celsius and kmh are Open-Meteo's defaults). */
+function units(q: WeatherQuery) {
+  return {
+    temperature_unit: q.temperatureUnit === 'fahrenheit' ? 'fahrenheit' : undefined,
+    wind_speed_unit: q.windSpeedUnit !== 'kmh' ? q.windSpeedUnit : undefined,
+  };
+}
+
+export class HttpOpenMeteoBackend implements OpenMeteoBackend {
+  private readonly geocodingUrl: string;
+  private readonly forecastUrl: string;
+  private readonly timeoutMs: number;
+
+  constructor(opts: HttpOpenMeteoOptions = {}) {
+    this.geocodingUrl = opts.geocodingUrl || DEFAULT_GEOCODING_URL;
+    this.forecastUrl = opts.forecastUrl || DEFAULT_FORECAST_URL;
+    this.timeoutMs = opts.timeoutMs ?? 15_000;
+  }
+
+  private async get<T>(endpoint: string, params: Record<string, string | number | undefined>): Promise<T> {
+    const url = new URL(endpoint);
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') url.searchParams.set(k, String(v));
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        headers: { accept: 'application/json', 'user-agent': USER_AGENT },
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (e) {
+      throw new OpenMeteoError(`network error calling Open-Meteo ${url.pathname}: ${(e as Error).message}`);
+    }
+    if (!res.ok) {
+      // Open-Meteo returns { error: true, reason } on 4xx/5xx.
+      let detail = res.statusText;
+      try {
+        const body = (await res.json()) as { error?: boolean; reason?: string };
+        if (body.reason) detail = body.reason;
+      } catch {
+        /* non-JSON body */
+      }
+      throw new OpenMeteoError(`Open-Meteo ${url.pathname} returned ${res.status}: ${detail}`, res.status);
+    }
+    return (await res.json()) as T;
+  }
+
+  async searchLocations({ name, count, language, countryCode }: LocationQuery): Promise<GeocodingResult[]> {
+    const body = await this.get<{ results?: GeocodingResult[] }>(this.geocodingUrl, { name, count, language, countryCode });
+    return body.results ?? [];
+  }
+
+  current(q: WeatherQuery): Promise<CurrentWeather> {
+    return this.get<CurrentWeather>(this.forecastUrl, {
+      latitude: q.latitude,
+      longitude: q.longitude,
+      current: CURRENT_VARS.join(','),
+      timezone: 'auto',
+      ...units(q),
+    });
+  }
+
+  forecast(q: ForecastQuery): Promise<Forecast> {
+    return this.get<Forecast>(this.forecastUrl, {
+      latitude: q.latitude,
+      longitude: q.longitude,
+      daily: DAILY_VARS.join(','),
+      forecast_days: q.days,
+      timezone: 'auto',
+      ...units(q),
+      ...(q.hours !== undefined ? { hourly: HOURLY_VARS.join(','), forecast_hours: q.hours } : {}),
+    });
+  }
+}

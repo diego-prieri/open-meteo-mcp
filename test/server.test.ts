@@ -3,8 +3,14 @@ import { beforeEach, test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { readFileSync } from 'node:fs';
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import {
+  CURRENT_VARS,
+  DAILY_VARS,
   FakeOpenMeteoBackend,
+  HOURLY_VARS,
+  HttpOpenMeteoBackend,
   InMemoryBackend,
   OpenMeteoError,
   type Backend,
@@ -168,4 +174,150 @@ test('wmo: wmoMarkdown lists the 29 codes in order', () => {
   assert.ok(md.includes('| 99 | Thunderstorm with heavy hail |'));
   assert.equal(md.match(/^\| \d+ \|/gm)?.length, 29);
   assert.ok(md.indexOf('| 3 |') < md.indexOf('| 45 |'));
+});
+
+// --- HttpOpenMeteoBackend (local node:http on 127.0.0.1, no real network) ---
+
+type Seen = { url: string; ua?: string };
+
+async function withHttp(
+  handler: (req: IncomingMessage, res: ServerResponse) => void,
+  fn: (backend: HttpOpenMeteoBackend, seen: Seen[]) => Promise<void>,
+) {
+  const seen: Seen[] = [];
+  const srv = createHttpServer((req, res) => {
+    seen.push({ url: req.url ?? '', ua: req.headers['user-agent'] });
+    handler(req, res);
+  });
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    const port = (srv.address() as AddressInfo).port;
+    const backend = new HttpOpenMeteoBackend({
+      geocodingUrl: `http://127.0.0.1:${port}/v1/search`,
+      forecastUrl: `http://127.0.0.1:${port}/v1/forecast`,
+    });
+    await fn(backend, seen);
+  } finally {
+    srv.close();
+  }
+}
+
+const json = (status: number, body: unknown) => (_req: IncomingMessage, res: ServerResponse) => {
+  res.writeHead(status, { 'content-type': 'application/json' });
+  res.end(JSON.stringify(body));
+};
+
+const params = (s: Seen) => new URL(s.url, 'http://x');
+
+test('http: searchLocations sends name, count, language, countryCode and User-Agent', async () => {
+  const one = fixture<{ results: GeocodingResult[] }>('geocoding-cordoba').results[0];
+  await withHttp(json(200, { results: [one] }), async (backend, seen) => {
+    const results = await backend.searchLocations({ name: 'Cordoba', count: 3, language: 'es', countryCode: 'AR' });
+    assert.equal(results.length, 1);
+    assert.equal(seen.length, 1);
+    const u = params(seen[0]);
+    assert.equal(u.pathname, '/v1/search');
+    assert.equal(u.searchParams.get('name'), 'Cordoba');
+    assert.equal(u.searchParams.get('count'), '3');
+    assert.equal(u.searchParams.get('language'), 'es');
+    assert.equal(u.searchParams.get('countryCode'), 'AR');
+    assert.match(seen[0].ua ?? '', /^open-meteo-mcp\//);
+  });
+});
+
+test('http: searchLocations without results returns []', async () => {
+  await withHttp(json(200, { generationtime_ms: 0.1 }), async (backend) => {
+    assert.deepEqual(await backend.searchLocations({ name: 'zzzz', count: 5, language: 'en' }), []);
+  });
+});
+
+test('http: current sends CURRENT_VARS and timezone=auto, omits default units', async () => {
+  await withHttp(json(200, fixture<CurrentWeather>('current-cordoba')), async (backend, seen) => {
+    await backend.current({ latitude: -31.4, longitude: -64.2, temperatureUnit: 'celsius', windSpeedUnit: 'kmh' });
+    const u = params(seen[0]);
+    assert.equal(u.pathname, '/v1/forecast');
+    assert.equal(u.searchParams.get('latitude'), '-31.4');
+    assert.equal(u.searchParams.get('longitude'), '-64.2');
+    assert.equal(u.searchParams.get('current'), CURRENT_VARS.join(','));
+    assert.equal(u.searchParams.get('timezone'), 'auto');
+    assert.equal(u.searchParams.has('temperature_unit'), false);
+    assert.equal(u.searchParams.has('wind_speed_unit'), false);
+  });
+});
+
+test('http: forecast sends daily, forecast_days and non-default units, no hourly', async () => {
+  await withHttp(json(200, fixture<Forecast>('daily-cordoba')), async (backend, seen) => {
+    await backend.forecast({ ...CORDOBA, days: 3, temperatureUnit: 'fahrenheit', windSpeedUnit: 'mph' });
+    const u = params(seen[0]);
+    assert.equal(u.pathname, '/v1/forecast');
+    assert.equal(u.searchParams.get('daily'), DAILY_VARS.join(','));
+    assert.equal(u.searchParams.get('forecast_days'), '3');
+    assert.equal(u.searchParams.get('timezone'), 'auto');
+    assert.equal(u.searchParams.get('temperature_unit'), 'fahrenheit');
+    assert.equal(u.searchParams.get('wind_speed_unit'), 'mph');
+    assert.equal(u.searchParams.has('hourly'), false);
+    assert.equal(u.searchParams.has('forecast_hours'), false);
+  });
+});
+
+test('http: forecast with hours adds hourly in the same request', async () => {
+  await withHttp(json(200, fixture<Forecast>('hourly-cordoba')), async (backend, seen) => {
+    await backend.forecast({ ...CORDOBA, days: 2, hours: 4 });
+    assert.equal(seen.length, 1);
+    const u = params(seen[0]);
+    assert.equal(u.searchParams.get('daily'), DAILY_VARS.join(','));
+    assert.equal(u.searchParams.get('hourly'), HOURLY_VARS.join(','));
+    assert.equal(u.searchParams.get('forecast_hours'), '4');
+  });
+});
+
+test('http: 400 surfaces the reason literally', async () => {
+  const reason = 'Latitude must be in range of -90 to 90°. Given: 200.0.';
+  await withHttp(json(400, { error: true, reason }), async (backend) => {
+    await assert.rejects(backend.current({ ...CORDOBA, latitude: 200 }), (e: unknown) => {
+      assert.ok(e instanceof OpenMeteoError);
+      assert.equal(e.status, 400);
+      assert.ok(e.message.includes(`returned 400: ${reason}`), e.message);
+      return true;
+    });
+  });
+});
+
+test('http: 429 keeps the status', async () => {
+  await withHttp(json(429, { error: true, reason: 'Too many requests' }), async (backend) => {
+    await assert.rejects(backend.forecast({ ...CORDOBA, days: 1 }), (e: unknown) => {
+      assert.ok(e instanceof OpenMeteoError);
+      assert.equal(e.status, 429);
+      return true;
+    });
+  });
+});
+
+test('http: 500 with non-JSON body uses statusText', async () => {
+  const handler = (_req: IncomingMessage, res: ServerResponse) => {
+    res.writeHead(500);
+    res.end('oops');
+  };
+  await withHttp(handler, async (backend) => {
+    await assert.rejects(backend.current(CORDOBA), (e: unknown) => {
+      assert.ok(e instanceof OpenMeteoError);
+      assert.equal(e.status, 500);
+      assert.ok(e.message.includes('returned 500: Internal Server Error'), e.message);
+      return true;
+    });
+  });
+});
+
+test('http: network error has no status', async () => {
+  const srv = createHttpServer();
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+  const port = (srv.address() as AddressInfo).port;
+  await new Promise<void>((r) => srv.close(() => r()));
+  const backend = new HttpOpenMeteoBackend({ forecastUrl: `http://127.0.0.1:${port}/v1/forecast`, timeoutMs: 500 });
+  await assert.rejects(backend.current(CORDOBA), (e: unknown) => {
+    assert.ok(e instanceof OpenMeteoError);
+    assert.equal(e.status, undefined);
+    assert.ok(e.message.startsWith('network error calling Open-Meteo /v1/forecast'), e.message);
+    return true;
+  });
 });
