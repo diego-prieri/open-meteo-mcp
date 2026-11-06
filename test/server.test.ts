@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { beforeEach, test } from 'node:test';
+import { test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { readFileSync } from 'node:fs';
@@ -11,91 +11,17 @@ import {
   FakeOpenMeteoBackend,
   HOURLY_VARS,
   HttpOpenMeteoBackend,
-  InMemoryBackend,
   OpenMeteoError,
-  type Backend,
   type CurrentWeather,
   type FakeData,
   type Forecast,
   type GeocodingResult,
   type OpenMeteoBackend,
 } from '../src/backend.js';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { createServer } from '../src/server.js';
-import { registerWeatherTools } from '../src/tools/weather.js';
 import { wmoMarkdown, wmoText } from '../src/wmo.js';
 
-const SEED = [
-  { id: 'T-1', title: 'Set up CI', status: 'done' as const, createdAt: '2026-01-01T00:00:00.000Z' },
-  { id: 'T-2', title: 'Write onboarding guide', status: 'open' as const, description: 'Local setup', createdAt: '2026-01-02T00:00:00.000Z' },
-];
-
-async function connect(backend: Backend = new InMemoryBackend(SEED)) {
-  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-  await createServer(backend).connect(serverSide);
-  const client = new Client({ name: 'test', version: '0.0.0' });
-  await client.connect(clientSide);
-  return client;
-}
-
 const text = (r: any) => r.content[0].text as string;
-
-let client: Client;
-beforeEach(async () => {
-  client = await connect();
-});
-
-test('exposes the three tools with read-only hints where they apply', async () => {
-  const { tools } = await client.listTools();
-  const hints = Object.fromEntries(tools.map((t) => [t.name, t.annotations?.readOnlyHint]));
-  assert.deepEqual(hints, { list_tickets: true, get_ticket: true, create_ticket: false });
-});
-
-test('list_tickets filters by status and query', async () => {
-  const open = await client.callTool({ name: 'list_tickets', arguments: { status: 'open' } });
-  assert.equal(text(open), 'T-2 [open] Write onboarding guide');
-
-  const byQuery = await client.callTool({ name: 'list_tickets', arguments: { query: 'ci' } });
-  assert.deepEqual((byQuery.structuredContent as any).tickets.map((t: any) => t.id), ['T-1']);
-});
-
-test('get_ticket returns an actionable error for unknown ids', async () => {
-  const res = await client.callTool({ name: 'get_ticket', arguments: { id: 'T-99' } });
-  assert.equal(res.isError, true);
-  assert.match(text(res), /not found\. Use list_tickets/);
-});
-
-test('create_ticket adds a ticket that list_tickets then returns', async () => {
-  const created = await client.callTool({ name: 'create_ticket', arguments: { title: 'Rotate API keys' } });
-  assert.equal(text(created), 'Created T-3 [open] Rotate API keys');
-  const all = await client.callTool({ name: 'list_tickets', arguments: {} });
-  assert.match(text(all), /T-3/);
-});
-
-test('rejects invalid input before reaching the backend', async () => {
-  const res = await client.callTool({ name: 'create_ticket', arguments: { title: 'x' } });
-  assert.equal(res.isError, true);
-});
-
-test('backend failures come back as tool errors, not protocol errors', async () => {
-  const broken: Backend = {
-    listTickets: async () => {
-      throw new Error('upstream timeout');
-    },
-    getTicket: async () => undefined,
-    createTicket: async () => {
-      throw new Error('unused');
-    },
-  };
-  const res = await (await connect(broken)).callTool({ name: 'list_tickets', arguments: {} });
-  assert.equal(res.isError, true);
-  assert.match(text(res), /upstream timeout/);
-});
-
-test('serves the status guide resource', async () => {
-  const res = await client.readResource({ uri: 'guide://ticket-statuses' });
-  assert.match((res.contents[0] as any).text, /in_progress/);
-});
 
 // --- Open-Meteo ---
 
@@ -327,11 +253,9 @@ test('http: network error has no status', async () => {
 
 // --- Tools: search_locations, get_current_weather ---
 
-async function connectWeather(backend: OpenMeteoBackend = fake()) {
-  const server = new McpServer({ name: 'test-weather', version: '0.0.0' });
-  registerWeatherTools(server, backend);
+async function connect(backend: OpenMeteoBackend = fake()) {
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverSide);
+  await createServer(backend).connect(serverSide);
   const c = new Client({ name: 'test', version: '0.0.0' });
   await c.connect(clientSide);
   return c;
@@ -340,7 +264,7 @@ async function connectWeather(backend: OpenMeteoBackend = fake()) {
 const lines = (r: any) => text(r).split('\n');
 
 test('search_locations: ambiguous name returns one line per place (criterio 2)', async () => {
-  const c = await connectWeather();
+  const c = await connect();
   const res = await c.callTool({ name: 'search_locations', arguments: { name: 'Córdoba' } });
   const out = lines(res);
   assert.equal(out.length, 3);
@@ -351,7 +275,7 @@ test('search_locations: ambiguous name returns one line per place (criterio 2)',
 });
 
 test('search_locations: country_code narrows to one (criterio 1)', async () => {
-  const c = await connectWeather();
+  const c = await connect();
   const res = await c.callTool({ name: 'search_locations', arguments: { name: 'Córdoba', country_code: 'AR' } });
   assert.equal(
     text(res),
@@ -361,7 +285,7 @@ test('search_locations: country_code narrows to one (criterio 1)', async () => {
 
 test('search_locations: lowercase country_code is normalized', async () => {
   const backend = fake();
-  const c = await connectWeather(backend);
+  const c = await connect(backend);
   const res = await c.callTool({ name: 'search_locations', arguments: { name: 'Córdoba', country_code: 'ar' } });
   assert.notEqual(res.isError, true);
   assert.equal((backend.calls[0].query as any).countryCode, 'AR');
@@ -369,20 +293,20 @@ test('search_locations: lowercase country_code is normalized', async () => {
 });
 
 test('search_locations: matches without accents', async () => {
-  const c = await connectWeather();
+  const c = await connect();
   const res = await c.callTool({ name: 'search_locations', arguments: { name: 'cordoba' } });
   assert.equal(lines(res).length, 3);
 });
 
 test('search_locations: count limits results', async () => {
-  const c = await connectWeather();
+  const c = await connect();
   const res = await c.callTool({ name: 'search_locations', arguments: { name: 'Córdoba', count: 2 } });
   assert.equal(lines(res).length, 2);
 });
 
 test('search_locations: defaults count 5 and language es', async () => {
   const backend = fake();
-  const c = await connectWeather(backend);
+  const c = await connect(backend);
   await c.callTool({ name: 'search_locations', arguments: { name: 'Córdoba' } });
   const q = backend.calls[0].query as any;
   assert.equal(q.count, 5);
@@ -390,7 +314,7 @@ test('search_locations: defaults count 5 and language es', async () => {
 });
 
 test('search_locations: empty result is not an error', async () => {
-  const c = await connectWeather(fake({ locations: [] }));
+  const c = await connect(fake({ locations: [] }));
   const res = await c.callTool({ name: 'search_locations', arguments: { name: 'Zzyzx' } });
   assert.notEqual(res.isError, true);
   assert.ok(text(res).includes('Check the spelling'));
@@ -411,7 +335,7 @@ test('search_locations: rejects invalid input before the backend', async () => {
     { name: 'x', language: 'spa' },
   ]) {
     const backend = fake();
-    const c = await connectWeather(backend);
+    const c = await connect(backend);
     const res = await c.callTool({ name: 'search_locations', arguments: args });
     assert.equal(res.isError, true, JSON.stringify(args));
     assert.equal(backend.calls.length, 0, JSON.stringify(args));
@@ -425,7 +349,7 @@ const currentWith = (edit: (w: CurrentWeather) => void) => {
 };
 
 test('get_current_weather: formats the fixture with units and timezone (criterio 1)', async () => {
-  const c = await connectWeather();
+  const c = await connect();
   const res = await c.callTool({ name: 'get_current_weather', arguments: { latitude: -31.4, longitude: -64.19 } });
   const t = text(res);
   for (const s of ['27.3°C', 'feels like 28°C', 'Mainly clear, day', '2026-11-06T14:15 America/Argentina/Cordoba (GMT-3)', '38%', '0 mm', '10.6 km/h from 198° S']) {
@@ -444,7 +368,7 @@ test('get_current_weather: units come from current_units (criterio 4)', async ()
     w.current.apparent_temperature = 82.4;
     w.current.wind_speed_10m = 6.6;
   });
-  const c = await connectWeather(backend);
+  const c = await connect(backend);
   const res = await c.callTool({
     name: 'get_current_weather',
     arguments: { latitude: -31.4, longitude: -64.19, temperature_unit: 'fahrenheit', wind_speed_unit: 'mph' },
@@ -460,7 +384,7 @@ test('get_current_weather: units come from current_units (criterio 4)', async ()
 });
 
 test('get_current_weather: is_day 0 shows night', async () => {
-  const c = await connectWeather(currentWith((w) => (w.current.is_day = 0)));
+  const c = await connect(currentWith((w) => (w.current.is_day = 0)));
   const res = await c.callTool({ name: 'get_current_weather', arguments: { latitude: -31.4, longitude: -64.19 } });
   assert.ok(text(res).includes(', night'), text(res));
 });
@@ -471,7 +395,7 @@ test('get_current_weather: nulls show n/a', async () => {
     w.current.wind_direction_10m = null;
     w.current.weather_code = null;
   });
-  const c = await connectWeather(backend);
+  const c = await connect(backend);
   const res = await c.callTool({ name: 'get_current_weather', arguments: { latitude: -31.4, longitude: -64.19 } });
   const t = text(res);
   assert.ok(t.includes('Temperature: n/a'), t);
@@ -481,13 +405,13 @@ test('get_current_weather: nulls show n/a', async () => {
 });
 
 test('get_current_weather: unknown WMO code', async () => {
-  const c = await connectWeather(currentWith((w) => (w.current.weather_code = 42)));
+  const c = await connect(currentWith((w) => (w.current.weather_code = 42)));
   const res = await c.callTool({ name: 'get_current_weather', arguments: { latitude: -31.4, longitude: -64.19 } });
   assert.ok(text(res).includes('Unknown (code 42)'), text(res));
 });
 
 test('get_current_weather: missing unit key says unit unknown', async () => {
-  const c = await connectWeather(currentWith((w) => delete w.current_units.precipitation));
+  const c = await connect(currentWith((w) => delete w.current_units.precipitation));
   const res = await c.callTool({ name: 'get_current_weather', arguments: { latitude: -31.4, longitude: -64.19 } });
   assert.ok(text(res).includes('Precipitation: 0 (unit unknown)'), text(res));
 });
@@ -502,7 +426,7 @@ test('get_current_weather: rejects invalid input before the backend', async () =
     { latitude: 0, longitude: 0, wind_speed_unit: 'knots' },
   ]) {
     const backend = fake();
-    const c = await connectWeather(backend);
+    const c = await connect(backend);
     const res = await c.callTool({ name: 'get_current_weather', arguments: args });
     assert.equal(res.isError, true, JSON.stringify(args));
     assert.equal(backend.calls.length, 0, JSON.stringify(args));
@@ -511,14 +435,14 @@ test('get_current_weather: rejects invalid input before the backend', async () =
 
 test('get_current_weather: cardinal wraps 337.5° and 360° to N', async () => {
   for (const deg of [337.5, 360]) {
-    const c = await connectWeather(currentWith((w) => (w.current.wind_direction_10m = deg)));
+    const c = await connect(currentWith((w) => (w.current.wind_direction_10m = deg)));
     const res = await c.callTool({ name: 'get_current_weather', arguments: { latitude: -31.4, longitude: -64.19 } });
     assert.ok(text(res).includes(`from ${deg}° N`), text(res));
   }
 });
 
 test('get_current_weather: is_day null shows day/night n/a', async () => {
-  const c = await connectWeather(currentWith((w) => (w.current.is_day = null)));
+  const c = await connect(currentWith((w) => (w.current.is_day = null)));
   const res = await c.callTool({ name: 'get_current_weather', arguments: { latitude: -31.4, longitude: -64.19 } });
   assert.ok(lines(res)[1].endsWith(', day/night n/a'), text(res));
 });
@@ -532,7 +456,7 @@ const count = (t: string, re: RegExp) => (t.match(re) ?? []).length;
 
 test('get_forecast: daily only (criterio 3)', async () => {
   const backend = fake();
-  const c = await connectWeather(backend);
+  const c = await connect(backend);
   const t = text(await c.callTool({ name: 'get_forecast', arguments: { ...COORDS, days: 3 } }));
   assert.equal(count(t, DAILY_LINE), 3, t);
   assert.equal(count(t, HOURLY_LINE), 0, t);
@@ -542,7 +466,7 @@ test('get_forecast: daily only (criterio 3)', async () => {
 
 test('get_forecast: daily plus hourly (criterio 3)', async () => {
   const backend = fake();
-  const c = await connectWeather(backend);
+  const c = await connect(backend);
   const t = text(await c.callTool({ name: 'get_forecast', arguments: { ...COORDS, days: 3, hourly: true, hours: 4 } }));
   assert.equal(count(t, DAILY_LINE), 3, t);
   assert.equal(count(t, HOURLY_LINE), 4, t);
@@ -553,7 +477,7 @@ test('get_forecast: daily plus hourly (criterio 3)', async () => {
 
 test('get_forecast: hours ignored without hourly', async () => {
   const backend = fake();
-  const c = await connectWeather(backend);
+  const c = await connect(backend);
   const t = text(await c.callTool({ name: 'get_forecast', arguments: { ...COORDS, hourly: false, hours: 10 } }));
   assert.equal(count(t, HOURLY_LINE), 0, t);
   assert.ok(!t.includes('Hourly:'), t);
@@ -561,13 +485,13 @@ test('get_forecast: hours ignored without hourly', async () => {
 });
 
 test('get_forecast: days cuts the daily lines', async () => {
-  const c = await connectWeather();
+  const c = await connect();
   const t = text(await c.callTool({ name: 'get_forecast', arguments: { ...COORDS, days: 2 } }));
   assert.equal(count(t, DAILY_LINE), 2, t);
 });
 
 test('get_forecast: header and exact daily line', async () => {
-  const c = await connectWeather();
+  const c = await connect();
   const t = text(await c.callTool({ name: 'get_forecast', arguments: { ...COORDS, days: 3 } }));
   assert.ok(t.includes('America/Argentina/Cordoba (GMT-3)'), t);
   assert.ok(
@@ -592,7 +516,7 @@ test('get_forecast: units come from daily_units (criterio 4)', async () => {
     f.daily_units.temperature_2m_min = '°F';
     f.daily_units.wind_speed_10m_max = 'mph';
   });
-  const c = await connectWeather(backend);
+  const c = await connect(backend);
   const t = text(
     await c.callTool({
       name: 'get_forecast',
@@ -610,7 +534,7 @@ test('get_forecast: nulls in arrays show n/a', async () => {
     (f) => (f.daily.precipitation_probability_max[1] = null),
     (f) => (f.hourly!.temperature_2m[0] = null),
   );
-  const c = await connectWeather(backend);
+  const c = await connect(backend);
   const t = text(await c.callTool({ name: 'get_forecast', arguments: { ...COORDS, days: 3, hourly: true, hours: 4 } }));
   assert.ok(t.includes('(max n/a)'), t);
   assert.ok(t.includes('2026-11-06T14:00: n/a'), t);
@@ -619,7 +543,7 @@ test('get_forecast: nulls in arrays show n/a', async () => {
 
 test('get_forecast: defaults days to 7', async () => {
   const backend = fake();
-  const c = await connectWeather(backend);
+  const c = await connect(backend);
   await c.callTool({ name: 'get_forecast', arguments: COORDS });
   const q = backend.calls[0].query as any;
   assert.equal(q.days, 7);
@@ -637,7 +561,7 @@ test('get_forecast: rejects invalid input before the backend', async () => {
     { hourly: 'yes' },
   ]) {
     const backend = fake();
-    const c = await connectWeather(backend);
+    const c = await connect(backend);
     const res = await c.callTool({ name: 'get_forecast', arguments: { ...COORDS, ...extra } });
     assert.equal(res.isError, true, JSON.stringify(extra));
     assert.equal(backend.calls.length, 0, JSON.stringify(extra));
@@ -665,7 +589,7 @@ const ALL_TOOL_CALLS = [
 ];
 
 async function assertEveryToolFails(backend: OpenMeteoBackend, re: RegExp) {
-  const c = await connectWeather(backend);
+  const c = await connect(backend);
   for (const call of ALL_TOOL_CALLS) {
     const res = await c.callTool(call);
     assert.equal(res.isError, true, call.name);
@@ -696,7 +620,7 @@ test('upstream: error without status says try again later', async () => {
 test('http tool: 400 reason reaches the model (criterio 5)', async () => {
   const reason = 'Latitude must be in range of -90 to 90°. Given: 200.0.';
   await withHttp(json(400, { error: true, reason }), async (http) => {
-    const c = await connectWeather(http);
+    const c = await connect(http);
     const res = await c.callTool({ name: 'get_current_weather', arguments: COORDS });
     assert.equal(res.isError, true);
     assert.ok(text(res).includes(reason), text(res));
@@ -706,7 +630,7 @@ test('http tool: 400 reason reaches the model (criterio 5)', async () => {
 
 test('http tool: 429 gives the rate limit hint', async () => {
   await withHttp(json(429, { error: true, reason: 'Too many requests' }), async (http) => {
-    const c = await connectWeather(http);
+    const c = await connect(http);
     const res = await c.callTool({ name: 'get_forecast', arguments: COORDS });
     assert.equal(res.isError, true);
     assert.match(text(res), /rate limit.*wait/);
@@ -719,7 +643,7 @@ test('http tool: 500 non-JSON gives try again later', async () => {
     res.end('oops');
   };
   await withHttp(handler, async (http) => {
-    const c = await connectWeather(http);
+    const c = await connect(http);
     const res = await c.callTool({ name: 'get_current_weather', arguments: COORDS });
     assert.equal(res.isError, true);
     assert.ok(text(res).includes('Internal Server Error'), text(res));
@@ -733,8 +657,39 @@ test('http tool: network error gives try again later', async () => {
   const port = (srv.address() as AddressInfo).port;
   await new Promise<void>((r) => srv.close(() => r()));
   const http = new HttpOpenMeteoBackend({ forecastUrl: `http://127.0.0.1:${port}/v1/forecast`, timeoutMs: 500 });
-  const c = await connectWeather(http);
+  const c = await connect(http);
   const res = await c.callTool({ name: 'get_forecast', arguments: COORDS });
   assert.equal(res.isError, true);
   assert.match(text(res), /network error.*Try again later/);
+});
+
+// --- Server: discovery ---
+
+test('server: exposes exactly the three weather tools, read-only and open-world', async () => {
+  const c = await connect();
+  const { tools } = await c.listTools();
+  assert.deepEqual(tools.map((t) => t.name).sort(), ['get_current_weather', 'get_forecast', 'search_locations']);
+  for (const t of tools) {
+    assert.equal(t.annotations?.readOnlyHint, true, t.name);
+    assert.equal(t.annotations?.destructiveHint, false, t.name);
+    assert.equal(t.annotations?.idempotentHint, true, t.name);
+    assert.equal(t.annotations?.openWorldHint, true, t.name);
+  }
+});
+
+test('server: lists only the WMO codes resource', async () => {
+  const c = await connect();
+  const { resources } = await c.listResources();
+  assert.deepEqual(resources.map((r) => r.uri), ['weather://wmo-codes']);
+  const res = await c.readResource({ uri: 'weather://wmo-codes' });
+  const md = (res.contents[0] as any).text as string;
+  assert.ok(md.includes('| 0 | Clear sky |'));
+  assert.ok(md.includes('| 99 | Thunderstorm with heavy hail |'));
+  assert.equal((md.match(/^\| \d+ \|/gm) ?? []).length, 29);
+});
+
+test('server: instructions explain the flow and the terms', async () => {
+  const c = await connect();
+  const instructions = c.getInstructions() ?? '';
+  for (const s of ['search_locations', 'CC BY 4.0', 'non-commercial']) assert.ok(instructions.includes(s), s);
 });

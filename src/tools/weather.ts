@@ -78,13 +78,13 @@ function fmtCurrent(w: CurrentWeather): string {
 }
 
 function fmtForecast(f: Forecast): string {
+  const at = (arr: (number | null)[] | undefined, i: number) => arr?.[i] ?? null;
   const d = f.daily;
   const u = f.daily_units;
   const out = [`Forecast for (${f.latitude}, ${f.longitude}), times in ${tz(f)}`, 'Daily:'];
   d.time.forEach((time, i) => {
-    const at = (arr: (number | null)[] | undefined) => arr?.[i] ?? null;
     out.push(
-      `${time}: ${wmoText(at(d.weather_code))}, min ${withUnit(at(d.temperature_2m_min), u.temperature_2m_min)} / max ${withUnit(at(d.temperature_2m_max), u.temperature_2m_max)}, precipitation ${withUnit(at(d.precipitation_sum), u.precipitation_sum)} (max ${withUnit(at(d.precipitation_probability_max), u.precipitation_probability_max)}), wind max ${withUnit(at(d.wind_speed_10m_max), u.wind_speed_10m_max)}`,
+      `${time}: ${wmoText(at(d.weather_code, i))}, min ${withUnit(at(d.temperature_2m_min, i), u.temperature_2m_min)} / max ${withUnit(at(d.temperature_2m_max, i), u.temperature_2m_max)}, precipitation ${withUnit(at(d.precipitation_sum, i), u.precipitation_sum)} (max ${withUnit(at(d.precipitation_probability_max, i), u.precipitation_probability_max)}), wind max ${withUnit(at(d.wind_speed_10m_max, i), u.wind_speed_10m_max)}`,
     );
   });
   const h = f.hourly;
@@ -92,9 +92,8 @@ function fmtForecast(f: Forecast): string {
     const hu = f.hourly_units ?? {};
     out.push('Hourly:');
     h.time.forEach((time, i) => {
-      const at = (arr: (number | null)[] | undefined) => arr?.[i] ?? null;
       out.push(
-        `${time}: ${withUnit(at(h.temperature_2m), hu.temperature_2m)}, precipitation probability ${withUnit(at(h.precipitation_probability), hu.precipitation_probability)}, ${wmoText(at(h.weather_code))}`,
+        `${time}: ${withUnit(at(h.temperature_2m, i), hu.temperature_2m)}, precipitation probability ${withUnit(at(h.precipitation_probability, i), hu.precipitation_probability)}, ${wmoText(at(h.weather_code, i))}`,
       );
     });
   }
