@@ -69,7 +69,7 @@ Trampas del runner:
 - Rama base: `main`
 - Branch de feature: `feature/<slug>`
 - ¿El flujo puede commitear solo?: sí, localmente
-- ¿Puede pushear y abrir PR?: no — el repo no tiene remote todavía; siempre modo `--dry-run`
+- ¿Puede pushear y abrir PR?: remote `origin` = github.com/diego-prieri/open-meteo-mcp (público); pushear y abrir PR solo con OK explícito del dev
 - Formato del mensaje: subject en inglés, imperativo, sin prefijo (como `Upgrade zod to v4 (security advisory)`); trailer `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
 - Granularidad: un commit por paso de feature.
 

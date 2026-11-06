@@ -27,8 +27,12 @@ src/
   tools/weather.ts  Tool definitions: zod inputs, annotations, ok()/fail() results
   server.ts         createServer(backend): tools, resource and instructions, no transport
   index.ts          stdio entry point; builds the backend from env
+  http.ts           Stateless Streamable HTTP handler (used by the Vercel function)
+api/
+  mcp.js            Vercel function at /api/mcp, re-exports dist/http.js
 test/
   server.test.ts    In-memory client ↔ server tests, no network
+  http.test.ts      HTTP endpoint tests on 127.0.0.1, no network
   live.test.ts      Optional smoke test against the real API
   fixtures/         Real Open-Meteo responses captured with curl
 ```
