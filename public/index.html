@@ -1,14 +1,476 @@
 <!doctype html>
-<html lang="en">
+<html lang="es">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>open-meteo-mcp</title>
-<body style="font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5">
-<h1>open-meteo-mcp</h1>
-<p>MCP server with weather forecasts and current conditions from <a href="https://open-meteo.com/">Open-Meteo</a>.
-The MCP endpoint is <code>/api/mcp</code> (Streamable HTTP, POST only).</p>
-<pre>claude mcp add --transport http open-meteo https://open-meteo-mcp-eight.vercel.app/api/mcp</pre>
-<p>Weather data by <a href="https://open-meteo.com/">Open-Meteo.com</a>, licensed CC BY 4.0. Free API for non-commercial use only.
-Source: <a href="https://github.com/diego-prieri/open-meteo-mcp">github.com/diego-prieri/open-meteo-mcp</a></p>
+<title>Clima · open-meteo-mcp</title>
+<meta name="description" content="Clima actual y pronóstico de cualquier lugar, servido por el servidor MCP open-meteo-mcp con datos de Open-Meteo.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛅</text></svg>">
+<style>
+  :root {
+    --bg: #f4f6fa;
+    --surface: #ffffff;
+    --surface-2: #eef2f8;
+    --text: #1b2330;
+    --muted: #5d6b80;
+    --border: #dde3ec;
+    --accent: #2563eb;
+    --accent-text: #ffffff;
+    --error-bg: #fdecec;
+    --error-text: #9b1c1c;
+    --rain: #2b6cb0;
+    --shadow: 0 1px 2px rgb(16 24 40 / 6%), 0 4px 16px rgb(16 24 40 / 6%);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f141b;
+      --surface: #171e28;
+      --surface-2: #1f2834;
+      --text: #e7ecf3;
+      --muted: #97a3b6;
+      --border: #2a3442;
+      --accent: #5b8cff;
+      --accent-text: #0b1020;
+      --error-bg: #3a1a1d;
+      --error-text: #ffb4b4;
+      --rain: #7fb2ff;
+      --shadow: none;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 56rem; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  h1 { font-size: 1.35rem; margin: 0; }
+  h1 span { color: var(--muted); font-weight: 400; font-size: 0.95rem; margin-left: 0.4rem; }
+  h2 { font-size: 1rem; margin: 0 0 0.75rem; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 1rem; box-shadow: var(--shadow); margin-bottom: 1rem; }
+
+  form { display: grid; grid-template-columns: 1fr auto auto; gap: 0.5rem; }
+  input, select, button { font: inherit; color: inherit; }
+  input, select {
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 0.6rem 0.75rem; min-width: 0;
+  }
+  input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button {
+    border: 0; border-radius: 10px; padding: 0.6rem 1rem; cursor: pointer;
+    background: var(--accent); color: var(--accent-text); font-weight: 600;
+  }
+  button.secondary { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); font-weight: 500; }
+  button:disabled { opacity: 0.6; cursor: progress; }
+  .row { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.6rem; }
+  .chip { padding: 0.35rem 0.75rem; border-radius: 999px; font-size: 0.9rem; }
+
+  .units { display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .units button { border-radius: 0; background: var(--surface); color: var(--muted); font-weight: 500; padding: 0.4rem 0.8rem; }
+  .units button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); }
+
+  .results { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.4rem; }
+  .results button {
+    width: 100%; text-align: left; background: var(--surface-2); color: var(--text);
+    border: 1px solid var(--border); font-weight: 400; display: flex; justify-content: space-between; gap: 1rem;
+  }
+  .results small { color: var(--muted); white-space: nowrap; }
+
+  .status { color: var(--muted); margin: 0; }
+  .error { background: var(--error-bg); color: var(--error-text); border-radius: 10px; padding: 0.75rem 1rem; margin: 0; }
+
+  .now { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1.25rem; align-items: center; }
+  .now .icon { font-size: 4rem; line-height: 1; grid-row: span 2; }
+  .now .temp { font-size: 3rem; font-weight: 700; line-height: 1; }
+  .now .desc { font-size: 1.1rem; }
+  .place { font-size: 1.15rem; font-weight: 600; margin: 0 0 0.15rem; }
+  .meta { color: var(--muted); font-size: 0.9rem; margin: 0 0 1rem; }
+  .facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.5rem; margin-top: 1rem; }
+  .fact { background: var(--surface-2); border-radius: 10px; padding: 0.6rem 0.75rem; }
+  .fact dt { color: var(--muted); font-size: 0.8rem; }
+  .fact dd { margin: 0; font-weight: 600; }
+
+  .hours { display: flex; gap: 0.5rem; overflow-x: auto; padding-bottom: 0.4rem; scroll-snap-type: x proximity; }
+  .hour { flex: 0 0 4.6rem; text-align: center; background: var(--surface-2); border-radius: 10px; padding: 0.55rem 0.25rem; scroll-snap-align: start; }
+  .hour .t { color: var(--muted); font-size: 0.85rem; }
+  .hour .i { font-size: 1.5rem; }
+  .hour .v { font-weight: 600; }
+  .hour .p { color: var(--rain); font-size: 0.8rem; }
+
+  .days { list-style: none; margin: 0; padding: 0; }
+  .day { display: grid; grid-template-columns: 6.5rem 2rem 1fr auto; gap: 0.75rem; align-items: center; padding: 0.55rem 0; border-top: 1px solid var(--border); }
+  .day:first-child { border-top: 0; }
+  .day .name { font-weight: 600; text-transform: capitalize; }
+  .day .name small { display: block; color: var(--muted); font-weight: 400; text-transform: none; }
+  .day .i { font-size: 1.5rem; text-align: center; }
+  .day .d { color: var(--muted); font-size: 0.9rem; }
+  .day .d .p { color: var(--rain); white-space: nowrap; }
+  .day .mm { white-space: nowrap; text-align: right; }
+  .day .mm b { font-size: 1.05rem; }
+  .day .mm span { color: var(--muted); margin-left: 0.4rem; }
+
+  footer { color: var(--muted); font-size: 0.85rem; margin-top: 2rem; }
+  footer a { color: var(--accent); }
+  footer code { background: var(--surface-2); padding: 0.1rem 0.35rem; border-radius: 6px; word-break: break-all; }
+
+  [hidden] { display: none !important; }
+
+  @media (max-width: 40rem) {
+    form { grid-template-columns: 1fr auto; }
+    form input { grid-column: 1 / -1; }
+    .now .icon { font-size: 3rem; }
+    .now .temp { font-size: 2.4rem; }
+    .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .day { grid-template-columns: 5.2rem 1.8rem 1fr auto; gap: 0.5rem; }
+    .day .d .sum { display: none; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>⛅ Clima <span>open-meteo-mcp</span></h1>
+    <div class="units" role="group" aria-label="Unidad de temperatura">
+      <button type="button" data-unit="celsius" aria-pressed="true">°C</button>
+      <button type="button" data-unit="fahrenheit" aria-pressed="false">°F</button>
+    </div>
+  </header>
+
+  <section class="card" aria-label="Buscar lugar">
+    <form id="search">
+      <input id="q" name="q" type="search" placeholder="Ciudad o lugar, p. ej. Córdoba" autocomplete="off" required aria-label="Lugar">
+      <select id="country" name="country" aria-label="País">
+        <option value="">Cualquier país</option>
+        <option value="AR">Argentina</option>
+        <option value="BO">Bolivia</option>
+        <option value="BR">Brasil</option>
+        <option value="CL">Chile</option>
+        <option value="CO">Colombia</option>
+        <option value="ES">España</option>
+        <option value="US">Estados Unidos</option>
+        <option value="MX">México</option>
+        <option value="PY">Paraguay</option>
+        <option value="PE">Perú</option>
+        <option value="UY">Uruguay</option>
+      </select>
+      <button id="go" type="submit">Buscar</button>
+    </form>
+    <div class="row">
+      <button type="button" class="secondary chip" id="locate">📍 Mi ubicación</button>
+      <button type="button" class="secondary chip" data-quick="Buenos Aires|AR">Buenos Aires</button>
+      <button type="button" class="secondary chip" data-quick="Córdoba|AR">Córdoba</button>
+      <button type="button" class="secondary chip" data-quick="Rosario|AR">Rosario</button>
+      <button type="button" class="secondary chip" data-quick="San Carlos de Bariloche|AR">Bariloche</button>
+    </div>
+  </section>
+
+  <p id="status" class="status" role="status" aria-live="polite"></p>
+  <p id="error" class="error" role="alert" hidden></p>
+
+  <section id="choices" class="card" hidden>
+    <h2>¿Cuál de estos?</h2>
+    <ul id="results" class="results"></ul>
+  </section>
+
+  <section id="now" class="card" hidden aria-label="Clima actual">
+    <p class="place" id="place"></p>
+    <p class="meta" id="nowMeta"></p>
+    <div class="now">
+      <div class="icon" id="nowIcon" aria-hidden="true"></div>
+      <div class="temp" id="nowTemp"></div>
+      <div class="desc" id="nowDesc"></div>
+    </div>
+    <dl class="facts" id="facts"></dl>
+  </section>
+
+  <section id="hourly" class="card" hidden aria-label="Próximas horas">
+    <h2>Próximas 24 horas</h2>
+    <div class="hours" id="hours"></div>
+  </section>
+
+  <section id="daily" class="card" hidden aria-label="Pronóstico">
+    <h2>Próximos 7 días</h2>
+    <ul class="days" id="days"></ul>
+  </section>
+
+  <footer>
+    <p>Datos meteorológicos de <a href="https://open-meteo.com/" rel="noopener">Open-Meteo.com</a>, licencia CC BY 4.0. API gratuita, solo para uso no comercial. Las horas son locales al lugar consultado.</p>
+    <p>Esta página usa el servidor MCP en <code>/api/mcp</code>. Para usarlo desde un agente:
+      <code>claude mcp add --transport http open-meteo https://open-meteo-mcp-eight.vercel.app/api/mcp</code>
+      · Código: <a href="https://github.com/diego-prieri/open-meteo-mcp" rel="noopener">github.com/diego-prieri/open-meteo-mcp</a></p>
+  </footer>
+</main>
+
+<script type="module">
+  // Every call goes through the MCP endpoint (JSON-RPC tools/call); the page renders structuredContent.
+  const ENDPOINT = '/api/mcp';
+  const $ = (id) => document.getElementById(id);
+
+  // WMO codes, same set as the server's weather://wmo-codes resource, in Spanish with an icon.
+  const WMO = {
+    0: ['Despejado', '☀️', '🌙'], 1: ['Mayormente despejado', '🌤️', '🌙'], 2: ['Parcialmente nublado', '⛅', '☁️'], 3: ['Nublado', '☁️'],
+    45: ['Niebla', '🌫️'], 48: ['Niebla con escarcha', '🌫️'],
+    51: ['Llovizna débil', '🌦️'], 53: ['Llovizna moderada', '🌦️'], 55: ['Llovizna intensa', '🌧️'],
+    56: ['Llovizna helada débil', '🌧️'], 57: ['Llovizna helada intensa', '🌧️'],
+    61: ['Lluvia débil', '🌦️'], 63: ['Lluvia moderada', '🌧️'], 65: ['Lluvia fuerte', '🌧️'],
+    66: ['Lluvia helada débil', '🌧️'], 67: ['Lluvia helada fuerte', '🌧️'],
+    71: ['Nevada débil', '🌨️'], 73: ['Nevada moderada', '🌨️'], 75: ['Nevada fuerte', '❄️'], 77: ['Granos de nieve', '🌨️'],
+    80: ['Chaparrones débiles', '🌦️'], 81: ['Chaparrones moderados', '🌧️'], 82: ['Chaparrones violentos', '⛈️'],
+    85: ['Chaparrones de nieve débiles', '🌨️'], 86: ['Chaparrones de nieve fuertes', '❄️'],
+    95: ['Tormenta', '⛈️'], 96: ['Tormenta con granizo débil', '⛈️'], 97: ['Tormenta fuerte', '⛈️'], 99: ['Tormenta con granizo fuerte', '⛈️'],
+  };
+  const wmo = (code, isDay = 1) => {
+    if (code === null || code === undefined) return { text: 's/d', icon: '·' };
+    const w = WMO[code];
+    if (!w) return { text: `Código ${code}`, icon: '❔' };
+    return { text: w[0], icon: (!isDay && w[2]) || w[1] };
+  };
+  const CARDINAL = ['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'];
+  const cardinal = (deg) => (deg === null || deg === undefined ? '' : CARDINAL[Math.round((((deg % 360) + 360) % 360) / 45) % 8]);
+  const val = (v, unit) => (v === null || v === undefined ? 's/d' : `${Math.round(v * 10) / 10}${unit === '%' || unit?.startsWith('°') ? '' : ' '}${unit ?? ''}`);
+  const round = (v, unit) => (v === null || v === undefined ? 's/d' : `${Math.round(v)}${unit ?? ''}`);
+
+  // Open-Meteo dates are local to the place and carry no offset: format them without converting time zones.
+  const dayName = (ymd, i) => {
+    if (i === 0) return 'Hoy';
+    if (i === 1) return 'Mañana';
+    const [y, m, d] = ymd.split('-').map(Number);
+    return new Intl.DateTimeFormat('es', { weekday: 'long', timeZone: 'UTC' }).format(Date.UTC(y, m - 1, d));
+  };
+  const shortDate = (ymd) => {
+    const [y, m, d] = ymd.split('-').map(Number);
+    return new Intl.DateTimeFormat('es', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(Date.UTC(y, m - 1, d));
+  };
+  const hhmm = (t) => t.slice(11, 16);
+
+  let rpcId = 0;
+  async function callTool(name, args) {
+    const res = await fetch(ENDPOINT, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: ++rpcId, method: 'tools/call', params: { name, arguments: args } }),
+    });
+    let body;
+    try {
+      body = await res.json();
+    } catch {
+      throw new Error(`El servidor respondió ${res.status} sin JSON.`);
+    }
+    if (body.error) throw new Error(body.error.message || 'Error del servidor MCP.');
+    const result = body.result;
+    if (!result) throw new Error('Respuesta inesperada del servidor MCP.');
+    if (result.isError) throw new Error(`No se pudo completar la consulta (${name}): ${result.content?.[0]?.text || 'error desconocido'}`);
+    return result.structuredContent;
+  }
+
+  const store = {
+    get(key) { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } },
+    set(key, v) { try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* storage unavailable */ } },
+  };
+
+  let unit = store.get('unit') === 'fahrenheit' ? 'fahrenheit' : 'celsius';
+  let current = null; // { name, sub, latitude, longitude }
+
+  const setStatus = (msg) => { $('status').textContent = msg; };
+  const setError = (msg) => { $('error').textContent = msg; $('error').hidden = !msg; };
+  const setBusy = (busy) => document.querySelectorAll('form button, .row button').forEach((b) => (b.disabled = busy));
+  const hideWeather = () => ['now', 'hourly', 'daily'].forEach((id) => ($(id).hidden = true));
+
+  function paintUnits() {
+    document.querySelectorAll('[data-unit]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.unit === unit)));
+  }
+
+  const label = (r) => [r.admin1, r.country].filter(Boolean).join(', ');
+
+  async function search(name, country) {
+    setError(''); setStatus('Buscando…'); setBusy(true); $('choices').hidden = true;
+    try {
+      const { results } = await callTool('search_locations', { name, count: 8, ...(country ? { country_code: country } : {}) });
+      if (!results.length) {
+        hideWeather();
+        setStatus('');
+        setError(`No encontré "${name}"${country ? ' en ese país' : ''}. Revisá cómo está escrito${country ? ' o probá con "Cualquier país"' : ''}.`);
+        return;
+      }
+      if (results.length === 1) return show(results[0]);
+      setStatus('');
+      const ul = $('results');
+      // Same name in the same province: add the department (admin2) so the options differ.
+      const seen = {};
+      for (const r of results) seen[`${r.name}|${label(r)}`] = (seen[`${r.name}|${label(r)}`] ?? 0) + 1;
+      ul.replaceChildren(...results.map((r) => {
+        const li = document.createElement('li');
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.innerHTML = '<span></span><small></small>';
+        const dup = seen[`${r.name}|${label(r)}`] > 1 && r.admin2;
+        b.firstChild.textContent = `${r.name} — ${dup ? `${r.admin2}, ` : ''}${label(r)}`;
+        b.lastChild.textContent = r.population ? `${new Intl.NumberFormat('es').format(r.population)} hab.` : r.country_code ?? '';
+        b.addEventListener('click', () => show(r));
+        li.append(b);
+        return li;
+      }));
+      $('choices').hidden = false;
+      ul.querySelector('button')?.focus();
+    } catch (e) {
+      setStatus(''); setError(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function show(place) {
+    current = { name: place.name, sub: label(place), latitude: place.latitude, longitude: place.longitude };
+    store.set('place', current);
+    $('choices').hidden = true;
+    await load();
+  }
+
+  // Only the latest load paints: a slower, older response (other place or unit) is dropped.
+  let loadSeq = 0;
+  async function load() {
+    if (!current) return;
+    const seq = ++loadSeq;
+    const place = current;
+    setError(''); setStatus('Cargando el clima…'); setBusy(true);
+    const coords = { latitude: place.latitude, longitude: place.longitude, temperature_unit: unit };
+    try {
+      const [now, fc] = await Promise.all([
+        callTool('get_current_weather', coords),
+        callTool('get_forecast', { ...coords, days: 7, hourly: true, hours: 24 }),
+      ]);
+      if (seq !== loadSeq) return;
+      renderNow(now, place);
+      renderHours(fc);
+      renderDays(fc);
+      setStatus('');
+    } catch (e) {
+      if (seq !== loadSeq) return;
+      hideWeather();
+      setStatus(''); setError(e.message === 'Failed to fetch' ? 'No hay conexión con el servidor. Probá de nuevo en un rato.' : e.message);
+    } finally {
+      if (seq === loadSeq) setBusy(false);
+    }
+  }
+
+  function renderNow(w, place) {
+    const c = w.current, u = w.current_units;
+    const s = wmo(c.weather_code, c.is_day);
+    $('place').textContent = place.sub ? `${place.name}, ${place.sub}` : place.name;
+    $('nowMeta').textContent = `Actualizado ${hhmm(c.time)} · hora local ${w.timezone} (${w.timezone_abbreviation})`;
+    $('nowIcon').textContent = s.icon;
+    $('nowTemp').textContent = val(c.temperature_2m, u.temperature_2m);
+    $('nowDesc').textContent = `${s.text} · sensación ${val(c.apparent_temperature, u.apparent_temperature)}`;
+    const facts = [
+      ['Humedad', val(c.relative_humidity_2m, u.relative_humidity_2m)],
+      ['Viento', `${val(c.wind_speed_10m, u.wind_speed_10m)} ${cardinal(c.wind_direction_10m)}`.trim()],
+      ['Precipitación', val(c.precipitation, u.precipitation)],
+      ['Momento', c.is_day === null || c.is_day === undefined ? 's/d' : c.is_day ? 'Día' : 'Noche'],
+    ];
+    $('facts').replaceChildren(...facts.map(([k, v]) => {
+      const d = document.createElement('div');
+      d.className = 'fact';
+      d.innerHTML = '<dt></dt><dd></dd>';
+      d.firstChild.textContent = k;
+      d.lastChild.textContent = v;
+      return d;
+    }));
+    $('now').hidden = false;
+  }
+
+  function renderHours(f) {
+    const h = f.hourly, u = f.hourly_units ?? {};
+    if (!h?.time?.length) { $('hourly').hidden = true; return; }
+    $('hours').replaceChildren(...h.time.map((t, i) => {
+      const s = wmo(h.weather_code?.[i]);
+      const d = document.createElement('div');
+      d.className = 'hour';
+      d.title = s.text;
+      d.innerHTML = '<div class="t"></div><div class="i" aria-hidden="true"></div><div class="v"></div><div class="p"></div>';
+      const [tEl, iEl, vEl, pEl] = d.children;
+      tEl.textContent = i === 0 ? 'Ahora' : hhmm(t);
+      iEl.textContent = s.icon;
+      vEl.textContent = round(h.temperature_2m?.[i], u.temperature_2m);
+      const p = h.precipitation_probability?.[i];
+      pEl.textContent = p ? `💧${p}${u.precipitation_probability ?? '%'}` : ' ';
+      return d;
+    }));
+    $('hourly').hidden = false;
+  }
+
+  function renderDays(f) {
+    const d = f.daily, u = f.daily_units ?? {};
+    $('days').replaceChildren(...d.time.map((t, i) => {
+      const s = wmo(d.weather_code?.[i]);
+      const li = document.createElement('li');
+      li.className = 'day';
+      li.innerHTML = '<div class="name"><small></small></div><div class="i" aria-hidden="true"></div><div class="d"><span class="txt"></span><span class="p"></span><span class="sum"></span></div><div class="mm"><b></b><span></span></div>';
+      const [name, icon, desc, mm] = li.children;
+      name.prepend(dayName(t, i));
+      name.querySelector('small').textContent = shortDate(t);
+      icon.textContent = s.icon;
+      desc.querySelector('.txt').textContent = s.text;
+      const p = d.precipitation_probability_max?.[i];
+      desc.querySelector('.p').textContent = p ? ` · 💧${p}${u.precipitation_probability_max ?? '%'}` : '';
+      const sum = d.precipitation_sum?.[i];
+      desc.querySelector('.sum').textContent = sum ? ` · ${val(sum, u.precipitation_sum)}` : '';
+      mm.querySelector('b').textContent = round(d.temperature_2m_max?.[i], u.temperature_2m_max);
+      mm.querySelector('span').textContent = round(d.temperature_2m_min?.[i], u.temperature_2m_min);
+      return li;
+    }));
+    $('daily').hidden = false;
+  }
+
+  $('search').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const name = $('q').value.trim();
+    if (name) search(name, $('country').value);
+  });
+
+  document.querySelectorAll('[data-quick]').forEach((b) =>
+    b.addEventListener('click', () => {
+      const [name, country] = b.dataset.quick.split('|');
+      $('q').value = name;
+      $('country').value = country;
+      search(name, country);
+    }),
+  );
+
+  $('locate').addEventListener('click', () => {
+    if (!navigator.geolocation) return setError('Este navegador no permite obtener tu ubicación.');
+    setError(''); setStatus('Obteniendo tu ubicación…');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => show({ name: 'Tu ubicación', latitude: Math.round(pos.coords.latitude * 1e4) / 1e4, longitude: Math.round(pos.coords.longitude * 1e4) / 1e4 }),
+      () => { setStatus(''); setError('No pude obtener tu ubicación. Revisá el permiso del navegador o buscá el lugar por nombre.'); },
+      { timeout: 10000, maximumAge: 600000 },
+    );
+  });
+
+  document.querySelectorAll('[data-unit]').forEach((b) =>
+    b.addEventListener('click', () => {
+      if (b.dataset.unit === unit) return;
+      unit = b.dataset.unit;
+      store.set('unit', unit);
+      paintUnits();
+      load();
+    }),
+  );
+
+  paintUnits();
+  const saved = store.get('place');
+  if (saved && typeof saved.latitude === 'number' && typeof saved.longitude === 'number') {
+    current = saved;
+    load();
+  } else {
+    $('q').value = 'Córdoba';
+    $('country').value = 'AR';
+    search('Córdoba', 'AR');
+  }
+</script>
 </body>
 </html>
