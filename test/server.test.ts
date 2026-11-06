@@ -2,8 +2,20 @@ import assert from 'node:assert/strict';
 import { beforeEach, test } from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { InMemoryBackend, type Backend } from '../src/backend.js';
+import { readFileSync } from 'node:fs';
+import {
+  FakeOpenMeteoBackend,
+  InMemoryBackend,
+  OpenMeteoError,
+  type Backend,
+  type CurrentWeather,
+  type FakeData,
+  type Forecast,
+  type GeocodingResult,
+  type OpenMeteoBackend,
+} from '../src/backend.js';
 import { createServer } from '../src/server.js';
+import { wmoMarkdown, wmoText } from '../src/wmo.js';
 
 const SEED = [
   { id: 'T-1', title: 'Set up CI', status: 'done' as const, createdAt: '2026-01-01T00:00:00.000Z' },
@@ -75,4 +87,85 @@ test('backend failures come back as tool errors, not protocol errors', async () 
 test('serves the status guide resource', async () => {
   const res = await client.readResource({ uri: 'guide://ticket-statuses' });
   assert.match((res.contents[0] as any).text, /in_progress/);
+});
+
+// --- Open-Meteo ---
+
+const fixture = <T>(name: string): T =>
+  JSON.parse(readFileSync(new URL(`./fixtures/${name}.json`, import.meta.url), 'utf8')) as T;
+
+const fake = (overrides: FakeData = {}) =>
+  new FakeOpenMeteoBackend({
+    locations: fixture<{ results: GeocodingResult[] }>('geocoding-cordoba').results,
+    current: fixture<CurrentWeather>('current-cordoba'),
+    daily: fixture<Forecast>('daily-cordoba'),
+    hourly: fixture<Forecast>('hourly-cordoba'),
+    ...overrides,
+  });
+
+const CORDOBA = { latitude: -31.4135, longitude: -64.18105, temperatureUnit: 'celsius', windSpeedUnit: 'kmh' } as const;
+
+test('fake: searchLocations matches without accents or case', async () => {
+  const results = await fake().searchLocations({ name: 'cordoba', count: 5, language: 'es' });
+  assert.equal(results.length, 3);
+});
+
+test('fake: searchLocations filters by countryCode and count', async () => {
+  const backend: OpenMeteoBackend = fake();
+  const ar = await backend.searchLocations({ name: 'Córdoba', count: 5, language: 'es', countryCode: 'AR' });
+  assert.equal(ar.length, 1);
+  assert.equal(ar[0].id, 3860259);
+  const two = await backend.searchLocations({ name: 'Córdoba', count: 2, language: 'es' });
+  assert.equal(two.length, 2);
+});
+
+test('fake: records every call', async () => {
+  const backend = fake();
+  const query = { name: 'cordoba', count: 1, language: 'es' };
+  await backend.searchLocations(query);
+  assert.deepEqual(backend.calls[0], { method: 'searchLocations', query });
+});
+
+test('fake: forecast cuts daily to days and omits hourly without hours', async () => {
+  const f = await fake().forecast({ ...CORDOBA, days: 2 });
+  assert.equal(f.daily.time.length, 2);
+  assert.equal(f.daily.weather_code.length, 2);
+  assert.equal('hourly' in f, false);
+});
+
+test('fake: forecast adds hourly cut to hours', async () => {
+  const f = await fake().forecast({ ...CORDOBA, days: 3, hours: 2 });
+  assert.equal(f.hourly?.time.length, 2);
+  assert.equal(f.hourly_units?.temperature_2m, '°C');
+});
+
+test('fake: current returns a copy', async () => {
+  const backend = fake();
+  const first = await backend.current(CORDOBA);
+  const original = first.current.temperature_2m;
+  first.current.temperature_2m = -999;
+  const second = await backend.current(CORDOBA);
+  assert.equal(second.current.temperature_2m, original);
+});
+
+test('fake: throws OpenMeteoError without data', async () => {
+  const backend = new FakeOpenMeteoBackend();
+  const is500 = (e: unknown) => e instanceof OpenMeteoError && e.status === 500;
+  await assert.rejects(backend.current(CORDOBA), is500);
+  await assert.rejects(backend.forecast({ ...CORDOBA, days: 1 }), is500);
+});
+
+test('wmo: wmoText translates known, unknown and null codes', () => {
+  assert.equal(wmoText(0), 'Clear sky');
+  assert.equal(wmoText(99), 'Thunderstorm with heavy hail');
+  assert.equal(wmoText(42), 'Unknown (code 42)');
+  assert.equal(wmoText(null), 'n/a');
+});
+
+test('wmo: wmoMarkdown lists the 29 codes in order', () => {
+  const md = wmoMarkdown();
+  assert.ok(md.includes('| 0 | Clear sky |'));
+  assert.ok(md.includes('| 99 | Thunderstorm with heavy hail |'));
+  assert.equal(md.match(/^\| \d+ \|/gm)?.length, 29);
+  assert.ok(md.indexOf('| 3 |') < md.indexOf('| 45 |'));
 });
