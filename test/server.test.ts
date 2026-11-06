@@ -508,3 +508,233 @@ test('get_current_weather: rejects invalid input before the backend', async () =
     assert.equal(backend.calls.length, 0, JSON.stringify(args));
   }
 });
+
+test('get_current_weather: cardinal wraps 337.5° and 360° to N', async () => {
+  for (const deg of [337.5, 360]) {
+    const c = await connectWeather(currentWith((w) => (w.current.wind_direction_10m = deg)));
+    const res = await c.callTool({ name: 'get_current_weather', arguments: { latitude: -31.4, longitude: -64.19 } });
+    assert.ok(text(res).includes(`from ${deg}° N`), text(res));
+  }
+});
+
+test('get_current_weather: is_day null shows day/night n/a', async () => {
+  const c = await connectWeather(currentWith((w) => (w.current.is_day = null)));
+  const res = await c.callTool({ name: 'get_current_weather', arguments: { latitude: -31.4, longitude: -64.19 } });
+  assert.ok(lines(res)[1].endsWith(', day/night n/a'), text(res));
+});
+
+// --- Tools: get_forecast ---
+
+const COORDS = { latitude: -31.4, longitude: -64.19 };
+const DAILY_LINE = /^\d{4}-\d{2}-\d{2}: /gm;
+const HOURLY_LINE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}: /gm;
+const count = (t: string, re: RegExp) => (t.match(re) ?? []).length;
+
+test('get_forecast: daily only (criterio 3)', async () => {
+  const backend = fake();
+  const c = await connectWeather(backend);
+  const t = text(await c.callTool({ name: 'get_forecast', arguments: { ...COORDS, days: 3 } }));
+  assert.equal(count(t, DAILY_LINE), 3, t);
+  assert.equal(count(t, HOURLY_LINE), 0, t);
+  assert.ok(!t.includes('Hourly:'), t);
+  assert.equal((backend.calls[0].query as any).hours, undefined);
+});
+
+test('get_forecast: daily plus hourly (criterio 3)', async () => {
+  const backend = fake();
+  const c = await connectWeather(backend);
+  const t = text(await c.callTool({ name: 'get_forecast', arguments: { ...COORDS, days: 3, hourly: true, hours: 4 } }));
+  assert.equal(count(t, DAILY_LINE), 3, t);
+  assert.equal(count(t, HOURLY_LINE), 4, t);
+  assert.ok(t.includes('2026-11-06T14:00: 27.1°C, precipitation probability 1%, Mainly clear'), t);
+  assert.equal(backend.calls.length, 1);
+  assert.equal((backend.calls[0].query as any).hours, 4);
+});
+
+test('get_forecast: hours ignored without hourly', async () => {
+  const backend = fake();
+  const c = await connectWeather(backend);
+  const t = text(await c.callTool({ name: 'get_forecast', arguments: { ...COORDS, hourly: false, hours: 10 } }));
+  assert.equal(count(t, HOURLY_LINE), 0, t);
+  assert.ok(!t.includes('Hourly:'), t);
+  assert.equal((backend.calls[0].query as any).hours, undefined);
+});
+
+test('get_forecast: days cuts the daily lines', async () => {
+  const c = await connectWeather();
+  const t = text(await c.callTool({ name: 'get_forecast', arguments: { ...COORDS, days: 2 } }));
+  assert.equal(count(t, DAILY_LINE), 2, t);
+});
+
+test('get_forecast: header and exact daily line', async () => {
+  const c = await connectWeather();
+  const t = text(await c.callTool({ name: 'get_forecast', arguments: { ...COORDS, days: 3 } }));
+  assert.ok(t.includes('America/Argentina/Cordoba (GMT-3)'), t);
+  assert.ok(
+    t.split('\n').includes(
+      '2026-11-06: Light drizzle, min 15.5°C / max 28.1°C, precipitation 0.1 mm (max 41%), wind max 26.1 km/h',
+    ),
+    t,
+  );
+});
+
+const dailyWith = (edit: (f: Forecast) => void, hourlyEdit?: (f: Forecast) => void) => {
+  const d = structuredClone(fixture<Forecast>('daily-cordoba'));
+  edit(d);
+  const h = structuredClone(fixture<Forecast>('hourly-cordoba'));
+  hourlyEdit?.(h);
+  return fake({ daily: d, hourly: h });
+};
+
+test('get_forecast: units come from daily_units (criterio 4)', async () => {
+  const backend = dailyWith((f) => {
+    f.daily_units.temperature_2m_max = '°F';
+    f.daily_units.temperature_2m_min = '°F';
+    f.daily_units.wind_speed_10m_max = 'mph';
+  });
+  const c = await connectWeather(backend);
+  const t = text(
+    await c.callTool({
+      name: 'get_forecast',
+      arguments: { ...COORDS, days: 3, temperature_unit: 'fahrenheit', wind_speed_unit: 'mph' },
+    }),
+  );
+  assert.ok(t.includes('°F'), t);
+  assert.ok(t.includes('mph'), t);
+  assert.ok(!t.includes('°C'), t);
+  assert.ok(!t.includes('km/h'), t);
+});
+
+test('get_forecast: nulls in arrays show n/a', async () => {
+  const backend = dailyWith(
+    (f) => (f.daily.precipitation_probability_max[1] = null),
+    (f) => (f.hourly!.temperature_2m[0] = null),
+  );
+  const c = await connectWeather(backend);
+  const t = text(await c.callTool({ name: 'get_forecast', arguments: { ...COORDS, days: 3, hourly: true, hours: 4 } }));
+  assert.ok(t.includes('(max n/a)'), t);
+  assert.ok(t.includes('2026-11-06T14:00: n/a'), t);
+  assert.ok(!t.includes('null'), t);
+});
+
+test('get_forecast: defaults days to 7', async () => {
+  const backend = fake();
+  const c = await connectWeather(backend);
+  await c.callTool({ name: 'get_forecast', arguments: COORDS });
+  const q = backend.calls[0].query as any;
+  assert.equal(q.days, 7);
+  assert.equal(q.temperatureUnit, 'celsius');
+  assert.equal(q.windSpeedUnit, 'kmh');
+});
+
+test('get_forecast: rejects invalid input before the backend', async () => {
+  for (const extra of [
+    { days: 0 },
+    { days: 17 },
+    { days: 1.5 },
+    { hourly: true, hours: 0 },
+    { hourly: true, hours: 49 },
+    { hourly: 'yes' },
+  ]) {
+    const backend = fake();
+    const c = await connectWeather(backend);
+    const res = await c.callTool({ name: 'get_forecast', arguments: { ...COORDS, ...extra } });
+    assert.equal(res.isError, true, JSON.stringify(extra));
+    assert.equal(backend.calls.length, 0, JSON.stringify(extra));
+  }
+});
+
+// --- Upstream failures through the tools ---
+
+const throwing = (err: Error): OpenMeteoBackend => ({
+  searchLocations: async () => {
+    throw err;
+  },
+  current: async () => {
+    throw err;
+  },
+  forecast: async () => {
+    throw err;
+  },
+});
+
+const ALL_TOOL_CALLS = [
+  { name: 'search_locations', arguments: { name: 'x' } },
+  { name: 'get_current_weather', arguments: COORDS },
+  { name: 'get_forecast', arguments: COORDS },
+];
+
+async function assertEveryToolFails(backend: OpenMeteoBackend, re: RegExp) {
+  const c = await connectWeather(backend);
+  for (const call of ALL_TOOL_CALLS) {
+    const res = await c.callTool(call);
+    assert.equal(res.isError, true, call.name);
+    assert.match(text(res), re, call.name);
+  }
+}
+
+test('upstream: 503 on every tool says try again later', async () => {
+  await assertEveryToolFails(
+    throwing(new OpenMeteoError('Open-Meteo /v1/forecast returned 503: Service Unavailable', 503)),
+    /503.*Try again later/,
+  );
+});
+
+test('upstream: 429 on every tool says wait', async () => {
+  await assertEveryToolFails(
+    throwing(new OpenMeteoError('Open-Meteo /v1/forecast returned 429: Too many requests', 429)),
+    /rate limit.*wait/,
+  );
+});
+
+test('upstream: error without status says try again later', async () => {
+  await assertEveryToolFails(throwing(new Error('fetch failed')), /Try again later/);
+});
+
+// --- Tools over HttpOpenMeteoBackend (local node:http, no real network) ---
+
+test('http tool: 400 reason reaches the model (criterio 5)', async () => {
+  const reason = 'Latitude must be in range of -90 to 90°. Given: 200.0.';
+  await withHttp(json(400, { error: true, reason }), async (http) => {
+    const c = await connectWeather(http);
+    const res = await c.callTool({ name: 'get_current_weather', arguments: COORDS });
+    assert.equal(res.isError, true);
+    assert.ok(text(res).includes(reason), text(res));
+    assert.ok(text(res).includes('Check the parameters'), text(res));
+  });
+});
+
+test('http tool: 429 gives the rate limit hint', async () => {
+  await withHttp(json(429, { error: true, reason: 'Too many requests' }), async (http) => {
+    const c = await connectWeather(http);
+    const res = await c.callTool({ name: 'get_forecast', arguments: COORDS });
+    assert.equal(res.isError, true);
+    assert.match(text(res), /rate limit.*wait/);
+  });
+});
+
+test('http tool: 500 non-JSON gives try again later', async () => {
+  const handler = (_req: IncomingMessage, res: ServerResponse) => {
+    res.writeHead(500);
+    res.end('oops');
+  };
+  await withHttp(handler, async (http) => {
+    const c = await connectWeather(http);
+    const res = await c.callTool({ name: 'get_current_weather', arguments: COORDS });
+    assert.equal(res.isError, true);
+    assert.ok(text(res).includes('Internal Server Error'), text(res));
+    assert.ok(text(res).includes('Try again later'), text(res));
+  });
+});
+
+test('http tool: network error gives try again later', async () => {
+  const srv = createHttpServer();
+  await new Promise<void>((r) => srv.listen(0, '127.0.0.1', r));
+  const port = (srv.address() as AddressInfo).port;
+  await new Promise<void>((r) => srv.close(() => r()));
+  const http = new HttpOpenMeteoBackend({ forecastUrl: `http://127.0.0.1:${port}/v1/forecast`, timeoutMs: 500 });
+  const c = await connectWeather(http);
+  const res = await c.callTool({ name: 'get_forecast', arguments: COORDS });
+  assert.equal(res.isError, true);
+  assert.match(text(res), /network error.*Try again later/);
+});

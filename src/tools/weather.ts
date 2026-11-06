@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import { OpenMeteoError, type CurrentWeather, type ForecastMeta, type GeocodingResult, type OpenMeteoBackend } from '../backend.js';
+import { OpenMeteoError, type CurrentWeather, type Forecast, type ForecastMeta, type GeocodingResult, type OpenMeteoBackend } from '../backend.js';
 import { wmoText } from '../wmo.js';
 
 /** Text for the model, structured content for clients that render or chain results. */
@@ -77,6 +77,30 @@ function fmtCurrent(w: CurrentWeather): string {
   ].join('\n');
 }
 
+function fmtForecast(f: Forecast): string {
+  const d = f.daily;
+  const u = f.daily_units;
+  const out = [`Forecast for (${f.latitude}, ${f.longitude}), times in ${tz(f)}`, 'Daily:'];
+  d.time.forEach((time, i) => {
+    const at = (arr: (number | null)[] | undefined) => arr?.[i] ?? null;
+    out.push(
+      `${time}: ${wmoText(at(d.weather_code))}, min ${withUnit(at(d.temperature_2m_min), u.temperature_2m_min)} / max ${withUnit(at(d.temperature_2m_max), u.temperature_2m_max)}, precipitation ${withUnit(at(d.precipitation_sum), u.precipitation_sum)} (max ${withUnit(at(d.precipitation_probability_max), u.precipitation_probability_max)}), wind max ${withUnit(at(d.wind_speed_10m_max), u.wind_speed_10m_max)}`,
+    );
+  });
+  const h = f.hourly;
+  if (h) {
+    const hu = f.hourly_units ?? {};
+    out.push('Hourly:');
+    h.time.forEach((time, i) => {
+      const at = (arr: (number | null)[] | undefined) => arr?.[i] ?? null;
+      out.push(
+        `${time}: ${withUnit(at(h.temperature_2m), hu.temperature_2m)}, precipitation probability ${withUnit(at(h.precipitation_probability), hu.precipitation_probability)}, ${wmoText(at(h.weather_code))}`,
+      );
+    });
+  }
+  return out.join('\n');
+}
+
 export function registerWeatherTools(server: McpServer, backend: OpenMeteoBackend): void {
   server.registerTool(
     'search_locations',
@@ -132,6 +156,46 @@ export function registerWeatherTools(server: McpServer, backend: OpenMeteoBacken
         return ok(fmtCurrent(w), w as unknown as Record<string, unknown>);
       } catch (e) {
         return upstreamFailure('get current weather', e);
+      }
+    },
+  );
+
+  server.registerTool(
+    'get_forecast',
+    {
+      title: 'Get forecast',
+      description:
+        'Daily forecast for up to 16 days (weather, min/max temperature, precipitation and its max probability, max wind) at the given coordinates and, with hourly: true, an hourly forecast for up to 48 hours (temperature, precipitation probability, weather). Times are local to the place. Use search_locations first if you only have a place name.',
+      inputSchema: {
+        latitude,
+        longitude,
+        days: z.number().int().min(1).max(16).default(7).describe('Number of forecast days (1–16, default 7)'),
+        hourly: z.boolean().default(false).describe('Also return the hourly forecast (default false)'),
+        hours: z
+          .number()
+          .int()
+          .min(1)
+          .max(48)
+          .default(24)
+          .describe('Number of hourly steps from now (1–48, default 24); ignored if hourly is false'),
+        temperature_unit: temperatureUnit,
+        wind_speed_unit: windSpeedUnit,
+      },
+      annotations: ALL_ANNOTATIONS,
+    },
+    async ({ latitude, longitude, days, hourly, hours, temperature_unit, wind_speed_unit }) => {
+      try {
+        const f = await backend.forecast({
+          latitude,
+          longitude,
+          temperatureUnit: temperature_unit,
+          windSpeedUnit: wind_speed_unit,
+          days,
+          hours: hourly ? hours : undefined,
+        });
+        return ok(fmtForecast(f), f as unknown as Record<string, unknown>);
+      } catch (e) {
+        return upstreamFailure('get forecast', e);
       }
     },
   );
