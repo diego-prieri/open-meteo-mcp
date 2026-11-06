@@ -691,5 +691,7 @@ test('server: lists only the WMO codes resource', async () => {
 test('server: instructions explain the flow and the terms', async () => {
   const c = await connect();
   const instructions = c.getInstructions() ?? '';
-  for (const s of ['search_locations', 'CC BY 4.0', 'non-commercial']) assert.ok(instructions.includes(s), s);
+  for (const s of ['search_locations', 'CC BY 4.0', 'non-commercial', '600 calls/min', '5,000/hour', '10,000/day']) {
+    assert.ok(instructions.includes(s), s);
+  }
 });

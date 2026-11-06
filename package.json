@@ -13,6 +13,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
+    "test:live": "OPEN_METEO_LIVE=1 node --import tsx --test test/live.test.ts",
     "dev": "tsx src/index.ts",
     "inspect": "npx @modelcontextprotocol/inspector tsx src/index.ts"
   },

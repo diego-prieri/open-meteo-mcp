@@ -1,59 +1,78 @@
 # open-meteo-mcp
 
-A small, production-minded starting point for a [Model Context Protocol](https://modelcontextprotocol.io) server in TypeScript.
+An [MCP](https://modelcontextprotocol.io) server that gives AI agents current weather and forecasts from the free [Open-Meteo](https://open-meteo.com) API. No API key is needed.
 
-Most MCP examples stop at "hello world". This one shows the decisions that matter once agents call your tools for real:
+## Tools
 
-- **Swappable backend.** Tools depend on a `Backend` interface, not on HTTP. The repo ships an in-memory store (used by default and in tests) and a REST adapter; replace either with your own API client without touching tool code.
-- **Errors the model can act on.** Failures come back as tool results with `isError: true` and a message that says what to do next ("not found, use `list_tickets` to find valid ids"), not as protocol errors that end the call.
-- **Validated, described inputs.** Zod schemas with bounds (`limit` 1–100, titles of 3–200 characters) and per-field descriptions, so bad calls are rejected before they reach the backend and the model knows what each argument means.
-- **Honest tool annotations.** `readOnlyHint`, `idempotentHint` and `destructiveHint` are set per tool, so clients can auto-approve reads and ask before writes.
-- **Text and structured output.** Each result carries a short text summary for the model and `structuredContent` for clients that render or chain results.
-- **Server instructions and a resource.** The server tells the agent how its tools fit together, and exposes reference docs as an MCP resource.
-- **Tests without a network.** The whole client–server round trip runs over the SDK's in-memory transport.
+All tools are read-only (`readOnlyHint: true`) and call an external service (`openWorldHint: true`).
+
+| Tool | Inputs | Returns |
+| --- | --- | --- |
+| `search_locations` | `name`, `count` (1–20, default 5), `country_code?` (2-letter ISO), `language` (ISO 639-1, default `es`) | matching places with country, admin area, coordinates and timezone; `structuredContent: { results }` |
+| `get_current_weather` | `latitude`, `longitude`, `temperature_unit` (`celsius` \| `fahrenheit`, default `celsius`), `wind_speed_unit` (`kmh` \| `ms` \| `mph` \| `kn`, default `kmh`) | current temperature, feels-like, humidity, precipitation, wind and WMO weather description, with units and the local timezone |
+| `get_forecast` | same as `get_current_weather`, plus `days` (1–16, default 7), `hourly` (default `false`), `hours` (1–48, default 24) | one line per day (`YYYY-MM-DD: …`) and, with `hourly: true`, one line per hour (`YYYY-MM-DDTHH:MM: …`) |
+
+Recommended flow: `search_locations` to turn a place name into coordinates, then `get_current_weather` or `get_forecast` with those coordinates. If the user already gave coordinates, the search can be skipped.
+
+The resource `weather://wmo-codes` lists the meaning of the WMO `weather_code` values returned by the tools.
+
+Text output is one compact line per result, always with units; the full objects are in `structuredContent`. Times are local to the place's timezone, which every result states. Empty searches come back as a normal result with a hint on what to try; upstream errors (4xx/5xx, timeouts) come back as `isError: true` with a suggestion.
 
 ## Layout
 
 ```
 src/
-  backend.ts        Backend interface + InMemoryBackend + HttpBackend
-  tools/tickets.ts  Tool definitions: schemas, annotations, error handling
-  server.ts         createServer(backend): tools + resources, no transport
-  index.ts          stdio entry point; picks the backend from env
+  backend.ts        OpenMeteoBackend interface + HttpOpenMeteoBackend (fetch) + FakeOpenMeteoBackend
+  wmo.ts            WMO weather code descriptions
+  tools/weather.ts  Tool definitions: zod inputs, annotations, ok()/fail() results
+  server.ts         createServer(backend): tools, resource and instructions, no transport
+  index.ts          stdio entry point; builds the backend from env
 test/
-  server.test.ts    In-memory client ↔ server tests
+  server.test.ts    In-memory client ↔ server tests, no network
+  live.test.ts      Optional smoke test against the real API
+  fixtures/         Real Open-Meteo responses captured with curl
 ```
 
-The example domain is a minimal ticket tracker (`list_tickets`, `get_ticket`, `create_ticket`). Rename it to your domain and keep the structure.
+## Install and run
 
-## Run it
+Requires Node.js 20 or newer.
 
 ```bash
 npm install
-npm test
-npm run inspect   # opens the MCP Inspector against the server
 npm run build
+claude mcp add open-meteo -- node /absolute/path/to/open-meteo-mcp/dist/index.js
 ```
 
-Use it from Claude Code:
+Any MCP client that launches stdio servers works the same way: run `node dist/index.js`.
 
 ```bash
-claude mcp add tickets -- node /absolute/path/to/mcp-server-template/dist/index.js
+npm run dev       # run from source with tsx
+npm run inspect   # MCP Inspector
 ```
 
-Point it at a real API instead of the in-memory store:
+## Environment variables
+
+Both are optional; each one is the full endpoint URL.
+
+- `OPEN_METEO_GEOCODING_URL`: geocoding endpoint (default `https://geocoding-api.open-meteo.com/v1/search`).
+- `OPEN_METEO_FORECAST_URL`: forecast endpoint (default `https://api.open-meteo.com/v1/forecast`).
+
+## Tests
 
 ```bash
-claude mcp add tickets -e API_BASE_URL=https://api.example.com -e API_TOKEN=… -- node /absolute/path/to/dist/index.js
+npm test            # in-memory client ↔ server tests, no network (the live test shows as skipped)
+npm run test:live   # smoke test against the real API (OPEN_METEO_LIVE=1)
+npm run typecheck
 ```
 
-## Adding a tool
+## Data and terms
 
-1. Add the method to `Backend` and implement it in both adapters.
-2. Register the tool in `src/tools/` with a description written for the model, bounded Zod inputs and accurate annotations.
-3. Return `ok(text, structured)` or `fail(message)`. Never throw out of a handler.
-4. Add a test in `test/server.test.ts` that goes through the client.
+Weather data by [Open-Meteo.com](https://open-meteo.com) ([CC BY 4.0](https://open-meteo.com/en/terms)). If you publish results obtained through this server, credit Open-Meteo.
+
+The free API is for non-commercial use only and is limited to 600 calls/min, 5,000/hour and 10,000/day. See the [Open-Meteo terms](https://open-meteo.com/en/terms) for details.
+
+This project is not affiliated with or endorsed by Open-Meteo.
 
 ## License
 
-MIT
+MIT (this server's code).
