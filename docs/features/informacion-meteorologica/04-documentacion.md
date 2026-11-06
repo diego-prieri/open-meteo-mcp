@@ -1,7 +1,7 @@
 # Documentación — Información meteorológica con Open-Meteo
 
 > Fuentes: `01-flujo-usuario.md`, `02-definicion-tecnica.md`, `03-pasos-implementacion.md` y `.claude/factory/convenciones.md`.
-> Estado: **generada junto con la spec, antes de implementar**. Completar las marcas `TODO` cuando la feature quede implementada (pasos 1–6 de `03-pasos-implementacion.md`).
+> Estado: **implementada** (pasos 1–6 de `03-pasos-implementacion.md`, branch `feature/informacion-meteorologica`, 2026-11-06). Veredictos por paso en `reviews.log`.
 >
 > Adaptación al dominio: es un servidor MCP, no hay UI. Las "pantallas" son llamadas a tools/resources y sus salidas (texto compacto en `content` + objeto completo en `structuredContent`). Quien "usa" la funcionalidad es un agente LLM en nombre de una persona.
 
@@ -135,9 +135,9 @@ Textos exactos: `02-definicion-tecnica.md` §7 y §8.
 
 **TODOs**
 
-- `TODO`: verificar qué devuelve Open-Meteo ante un `language` con formato válido pero no soportado (no está verificado en los insumos).
-- `TODO`: confirmar con datos reales cuándo aparecen `null` en `daily` / `hourly` (los fixtures no los tienen; hoy se cubre con `n/a` por defensa).
-- `TODO`: completar esta sección con lo que surja al implementar (desvíos respecto de la def técnica, si los hay).
+- Resuelto (curl, 2026-11-06): un `language` válido pero no soportado (`zz`) no da error; Open-Meteo devuelve los resultados con los nombres por defecto.
+- Abierto: no se observaron `null` en respuestas reales; queda cubierto por defensa con `n/a` y tests.
+- Sin desvíos de la definición técnica. Extras pedidos por las reviews: tests de rosa de vientos (337.5°/360° → N), `is_day` null, límites de uso en las instructions, y cierre de conexiones keep-alive en el helper HTTP de tests.
 
 No quedan decisiones técnicas pendientes: las tres que tomó la def técnica (omitir unidades default, formato exacto de líneas, `(unit unknown)`) fueron aceptadas (`03-pasos-implementacion.md` §4).
 
@@ -145,34 +145,34 @@ No quedan decisiones técnicas pendientes: las tres que tomó la def técnica (o
 
 **Verificación** (`## Verificación` de convenciones)
 
-- [ ] `npm run typecheck` en verde.
-- [ ] `npm run build` en verde.
-- [ ] `node --import tsx --test test/server.test.ts` en verde, con `# pass` > 0 (un `--test-name-pattern` sin matches da verde con 0 tests: no cuenta).
-- [ ] `npm test` deja `test/live.test.ts` como `skipped` (eso no es un verde del live test).
-- [ ] Si el dev lo pide: `npm run test:live` en verde contra la API real.
-- [ ] Cobertura: no hay herramienta configurada; confirmar que existen los tests de cada rama de `02-definicion-tecnica.md` §9 (criterios 1–5, vacío, nulls, unidad ausente, WMO desconocido, validaciones, 400/429/5xx/red).
+- [x] `npm run typecheck` en verde.
+- [x] `npm run build` en verde.
+- [x] `node --import tsx --test test/server.test.ts` en verde, con `# pass` > 0 (un `--test-name-pattern` sin matches da verde con 0 tests: no cuenta).
+- [x] `npm test` deja `test/live.test.ts` como `skipped` (eso no es un verde del live test).
+- [x] Si el dev lo pide: `npm run test:live` en verde contra la API real.
+- [x] Cobertura: no hay herramienta configurada; confirmar que existen los tests de cada rama de `02-definicion-tecnica.md` §9 (criterios 1–5, vacío, nulls, unidad ausente, WMO desconocido, validaciones, 400/429/5xx/red).
 
 **Antipatrones** (`## Antipatrones` de convenciones)
 
-- [ ] Sin `console.log` ni otras escrituras a `stdout`; logs solo con `console.error`.
-- [ ] Ningún handler lanza: todos devuelven `ok` / `fail` / `upstreamFailure`.
-- [ ] Ningún `fetch` en `src/tools/`.
-- [ ] Ningún test unitario sale a la red (solo fake o `127.0.0.1`).
-- [ ] Params y variables de Open-Meteo iguales a los fixtures (`CURRENT_VARS`, `DAILY_VARS`, `HOURLY_VARS`, `countryCode`, `timezone=auto`).
-- [ ] Sin restos del template: `grep -rniE "ticket|T-1|guide://|InMemoryBackend|API_BASE_URL|API_TOKEN" src test README.md` no devuelve nada.
+- [x] Sin `console.log` ni otras escrituras a `stdout`; logs solo con `console.error`.
+- [x] Ningún handler lanza: todos devuelven `ok` / `fail` / `upstreamFailure`.
+- [x] Ningún `fetch` en `src/tools/`.
+- [x] Ningún test unitario sale a la red (solo fake o `127.0.0.1`).
+- [x] Params y variables de Open-Meteo iguales a los fixtures (`CURRENT_VARS`, `DAILY_VARS`, `HOURLY_VARS`, `countryCode`, `timezone=auto`).
+- [x] Sin restos del template: `grep -rniE "ticket|T-1|guide://|InMemoryBackend|API_BASE_URL|API_TOKEN" src test README.md` no devuelve nada.
 
 **Reglas de negocio**
 
-- [ ] Ningún número sin unidad; la unidad sale de `*_units` (sin `°C` / `km/h` hardcodeados).
-- [ ] Toda hora va acompañada de su zona (`timezone (abbreviation)`).
-- [ ] Instructions y README con atribución CC BY 4.0, uso no comercial y los tres límites; nada promete uso comercial.
+- [x] Ningún número sin unidad; la unidad sale de `*_units` (sin `°C` / `km/h` hardcodeados).
+- [x] Toda hora va acompañada de su zona (`timezone (abbreviation)`).
+- [x] Instructions y README con atribución CC BY 4.0, uso no comercial y los tres límites; nada promete uso comercial.
 
 **Variantes de presentación**
 
-- [ ] Texto compacto: una línea por lugar / día / hora; encabezados que no empiezan con fecha; `Hourly:` solo con `hourly: true`.
-- [ ] `structuredContent` con el objeto completo (`{ results }` en búsqueda; la respuesta de Open-Meteo tal cual en clima actual y pronóstico).
-- [ ] Búsqueda vacía como resultado normal con pista, no como error.
+- [x] Texto compacto: una línea por lugar / día / hora; encabezados que no empiezan con fecha; `Hourly:` solo con `hourly: true`.
+- [x] `structuredContent` con el objeto completo (`{ results }` en búsqueda; la respuesta de Open-Meteo tal cual en clima actual y pronóstico).
+- [x] Búsqueda vacía como resultado normal con pista, no como error.
 
 **Cierre**
 
-- [ ] Actualizar la sección 7 de este documento (TODOs resueltos o desvíos de implementación).
+- [x] Actualizar la sección 7 de este documento (TODOs resueltos o desvíos de implementación).
